@@ -52,15 +52,15 @@ class ESDao constructor(private val indexPrefix: String) {
     fun getEsClient(esEndPoint: String, signingRegion: String): RestHighLevelClient {
 
 //      keytool -importcert -file node-0.example.com -alias certalias -keystore trusttest
-        System.setProperty("javax.net.ssl.trustStore", "/opensearch/trusttest");
-        System.setProperty("javax.net.ssl.trustStorePassword", "abc");
+        System.setProperty("javax.net.ssl.trustStore", "/home/gvnavin/opensearch/trusttest");
+        System.setProperty("javax.net.ssl.trustStorePassword", "123456");
 
         //Only for demo purposes. Don't specify your credentials in code.
         //Only for demo purposes. Don't specify your credentials in code.
         val credentialsProvider: CredentialsProvider = BasicCredentialsProvider()
         credentialsProvider.setCredentials(
             AuthScope.ANY,
-            UsernamePasswordCredentials("", "")
+            UsernamePasswordCredentials("admin", "admin")
         )
 
 
@@ -96,6 +96,37 @@ class ESDao constructor(private val indexPrefix: String) {
 //                        .disableConnectionState()
 //                    hacb.setSSLHostnameVerifier {  _, _ ->  true  }
 //                }
+        )
+    }
+
+
+    private val esClientForCloud = getEsClientForCloud(
+        "https://search.ap-south-1.es.amazonaws.com",
+        Region.AP_SOUTH_1.toString()
+    )
+
+    private fun getEsClientForCloud(esEndPoint: String, signingRegion: String): RestHighLevelClient {
+        val interceptor: HttpRequestInterceptor = AwsRequestSigningApacheInterceptor(
+            "es",
+            Aws4Signer.create(),
+            DefaultCredentialsProvider.create(),
+            signingRegion
+        )
+        return RestHighLevelClient(
+            RestClient
+                .builder(HttpHost.create(esEndPoint))
+                .setRequestConfigCallback { rcb ->
+                    rcb
+                        .setConnectTimeout(5 * 1000)
+                        .setSocketTimeout(120 * 1000)
+                }
+                .setHttpClientConfigCallback { hacb ->
+                    hacb
+                        .addInterceptorLast(interceptor)
+                        .setMaxConnPerRoute(500)
+                        .setMaxConnTotal(500)
+                        .disableConnectionState()
+                }
         )
     }
 
@@ -194,6 +225,9 @@ class ESDao constructor(private val indexPrefix: String) {
 
         println("ESDao.query println(searchRequest)")
         println(searchRequest)
+
+
+
         val result = esClient.msearch(searchRequest, RequestOptions.DEFAULT)
         return result.responses.mapIndexedNotNull { respIndex, resp ->
             if (resp.isFailure) {
