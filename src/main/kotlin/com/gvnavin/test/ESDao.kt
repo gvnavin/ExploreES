@@ -4,13 +4,6 @@ import com.gvnavin.test.esreader.ElasticSearchParam
 import com.gvnavin.test.esreader.ElasticSearchResult
 import com.gvnavin.test.esreader.QueryParam
 import com.gvnavin.test.eswriter.PublishType
-import io.github.acm19.aws.interceptor.http.AwsRequestSigningApacheInterceptor
-import org.apache.http.HttpHost
-import org.apache.http.HttpRequestInterceptor
-import org.apache.http.auth.AuthScope
-import org.apache.http.auth.UsernamePasswordCredentials
-import org.apache.http.client.CredentialsProvider
-import org.apache.http.impl.client.BasicCredentialsProvider
 import org.apache.logging.log4j.LogManager
 import org.opensearch.action.delete.DeleteRequest
 import org.opensearch.action.index.IndexRequest
@@ -18,9 +11,6 @@ import org.opensearch.action.search.MultiSearchRequest
 import org.opensearch.action.search.SearchRequest
 import org.opensearch.action.update.UpdateRequest
 import org.opensearch.client.RequestOptions
-import org.opensearch.client.RestClient
-import org.opensearch.client.RestClientBuilder
-import org.opensearch.client.RestHighLevelClient
 import org.opensearch.client.indices.CreateIndexRequest
 import org.opensearch.client.indices.GetIndexRequest
 import org.opensearch.common.unit.TimeValue
@@ -37,99 +27,12 @@ import org.opensearch.search.collapse.CollapseBuilder
 import org.opensearch.search.sort.ScriptSortBuilder
 import org.opensearch.search.sort.SortBuilders
 import org.opensearch.search.sort.SortOrder
-import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider
-import software.amazon.awssdk.auth.signer.Aws4Signer
 import software.amazon.awssdk.regions.Region
 
 
 class ESDao constructor(private val indexPrefix: String) {
 
-    private val esClient = getEsClient(
-        "https://localhost:9200",
-        Region.AP_SOUTH_1.toString()
-    )
-
-    fun getEsClient(esEndPoint: String, signingRegion: String): RestHighLevelClient {
-
-//      keytool -importcert -file node-0.example.com -alias certalias -keystore trusttest
-        System.setProperty("javax.net.ssl.trustStore", "/home/gvnavin/opensearch/trusttest");
-        System.setProperty("javax.net.ssl.trustStorePassword", "123456");
-
-        //Only for demo purposes. Don't specify your credentials in code.
-        //Only for demo purposes. Don't specify your credentials in code.
-        val credentialsProvider: CredentialsProvider = BasicCredentialsProvider()
-        credentialsProvider.setCredentials(
-            AuthScope.ANY,
-            UsernamePasswordCredentials("admin", "admin")
-        )
-
-
-
-        val interceptor: HttpRequestInterceptor = AwsRequestSigningApacheInterceptor(
-            "es",
-            Aws4Signer.create(),
-            DefaultCredentialsProvider.create(),
-            signingRegion
-        )
-
-        println("ESDao.getEsClient")
-
-        return RestHighLevelClient(
-            RestClient
-                .builder(HttpHost.create(esEndPoint))
-//                .setRequestConfigCallback { rcb ->
-//                    rcb
-//                        .setConnectTimeout(5 * 1000)
-//                        .setSocketTimeout(120 * 1000)
-//                }
-                .setHttpClientConfigCallback { httpClientBuilder ->
-                    httpClientBuilder.setDefaultCredentialsProvider(
-                        credentialsProvider
-                    )
-                }
-//                .setHttpClientConfigCallback{
-//                    hacb ->
-//                    hacb
-//                        .addInterceptorLast(interceptor)
-//                        .setMaxConnPerRoute(500)
-//                        .setMaxConnTotal(500)
-//                        .disableConnectionState()
-//                    hacb.setSSLHostnameVerifier {  _, _ ->  true  }
-//                }
-        )
-    }
-
-
-    private val esClientForCloud = getEsClientForCloud(
-        "https://search.ap-south-1.es.amazonaws.com",
-        Region.AP_SOUTH_1.toString()
-    )
-
-    private fun getEsClientForCloud(esEndPoint: String, signingRegion: String): RestHighLevelClient {
-        val interceptor: HttpRequestInterceptor = AwsRequestSigningApacheInterceptor(
-            "es",
-            Aws4Signer.create(),
-            DefaultCredentialsProvider.create(),
-            signingRegion
-        )
-        return RestHighLevelClient(
-            RestClient
-                .builder(HttpHost.create(esEndPoint))
-                .setRequestConfigCallback { rcb ->
-                    rcb
-                        .setConnectTimeout(5 * 1000)
-                        .setSocketTimeout(120 * 1000)
-                }
-                .setHttpClientConfigCallback { hacb ->
-                    hacb
-                        .addInterceptorLast(interceptor)
-                        .setMaxConnPerRoute(500)
-                        .setMaxConnTotal(500)
-                        .disableConnectionState()
-                }
-        )
-    }
-
+    private val esClient = esClientForCloud
 
     fun storeIndex(index: String, jsonString: String, uniqueId: String, type: PublishType) {
         when(type) {
@@ -160,10 +63,14 @@ class ESDao constructor(private val indexPrefix: String) {
     }
 
     fun query(searchList: List<ElasticSearchParam>): Map<Any, ElasticSearchResult> {
-        val resolvedIndexName = "people"
         val searchRequest = MultiSearchRequest()
         searchList.forEach { searchParam ->
+
             val boolQueryBuilder = QueryBuilders.boolQuery().apply {
+
+                searchParam.matchPhrasePrefixQueryParams.forEach { qp ->
+                    this.must(QueryBuilders.matchPhrasePrefixQuery(getKey(qp), qp.value))
+                }
                 searchParam.queryParams.forEach { qp ->
                     when (qp.operator) {
                         QueryParam.Operator.IN -> this.must(QueryBuilders.termsQuery(getKey(qp), qp.value as Collection<*>))
@@ -175,21 +82,21 @@ class ESDao constructor(private val indexPrefix: String) {
                 searchParam.orQueryParams.forEach { qp ->
                     this.must(getShouldBoolQuery(qp))
                 }
-                searchParam.rangeParams.rangeParams.forEach { rp ->
-                    val rangeQuery = RangeQueryBuilder(rp.key)
-                    val rangeFn = when (rp.operator) {
-                        QueryParam.Operator.GTE -> rangeQuery::gte
-                        QueryParam.Operator.GT -> rangeQuery::gt
-                        QueryParam.Operator.LT -> rangeQuery::lt
-                        QueryParam.Operator.LTE -> rangeQuery::lte
-                        else -> throw NoWhenBranchMatchedException("Range params operation not supported: ${rp.operator}")
-                    }
-                    this.must(rangeFn(rp.value))
-                }
+//                searchParam.rangeParams.rangeParams.forEach { rp ->
+//                    val rangeQuery = RangeQueryBuilder(rp.key)
+//                    val rangeFn = when (rp.operator) {
+//                        QueryParam.Operator.GTE -> rangeQuery::gte
+//                        QueryParam.Operator.GT -> rangeQuery::gt
+//                        QueryParam.Operator.LT -> rangeQuery::lt
+//                        QueryParam.Operator.LTE -> rangeQuery::lte
+//                        else -> throw NoWhenBranchMatchedException("Range params operation not supported: ${rp.operator}")
+//                    }
+//                    this.must(rangeFn(rp.value))
+//                }
             }
             val searchSourceBuilder = SearchSourceBuilder()
-                .from(searchParam.from)
-                .size(searchParam.size)
+//                .from(searchParam.from)
+//                .size(searchParam.size)
                 .version(true)
                 .timeout(TimeValue.timeValueMillis(ES_QUERY_TIMEOUT))
                 .query(boolQueryBuilder)
@@ -220,7 +127,7 @@ class ESDao constructor(private val indexPrefix: String) {
                     .collapse(CollapseBuilder("${searchParam.uniqueParam}.keyword"))
                     .aggregation(cardinalityAgg)
             }
-            searchRequest.add(SearchRequest(arrayOf(resolvedIndexName), searchSourceBuilder))
+            searchRequest.add(SearchRequest(arrayOf(indexPrefix), searchSourceBuilder))
         }
 
         println("ESDao.query println(searchRequest)")
